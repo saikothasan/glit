@@ -1,53 +1,77 @@
 {
-	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "polymath",
-	"main": "worker/index.ts",
-	"compatibility_date": "2024-10-22",
-	"compatibility_flags": ["nodejs_compat"],
-	"assets": {
-		"not_found_handling": "single-page-application",
-		"directory": "dist",
-		"binding": "ASSETS"
-	},
-	"observability": {
-		"enabled": true
-	},
-	"containers": [
-		{
-			"class_name": "Sandbox",
-			"image": "./Dockerfile"
-		}
-	],
-	"durable_objects": {
-		"bindings": [
-			{ "name": "PRIMARY_AGENT", "class_name": "PolymathAgent" },
-			{ "name": "CODE_SANDBOX", "class_name": "Sandbox" }
-		]
-	},
-	"workflows": [
-		{
-			"name": "RESEARCH_WORKFLOW",
-			"binding": "RESEARCH_WORKFLOW",
-			"class_name": "ResearchWorkflow"
-		}
-	],
-	"migrations": [
-		{
-			"tag": "v1",
-			"new_sqlite_classes": ["PolymathAgent"],
-			"new_classes": ["ResearchWorkflow", "Sandbox"]
-		}
-	],
-	"ai": {
-		"binding": "AI"
-	},
-	"browser": {
-		"binding": "MY_BROWSER"
-	},
-	"r2_buckets": [
-		{
-			"binding": "KNOWLEDGE_BASE",
-			"bucket_name": "polymath-knowledge-base"
-		}
-	]
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "polymath",
+  "main": "worker/index.ts",
+  "compatibility_date": "2024-10-22",
+  "compatibility_flags": ["nodejs_compat"],
+  
+  // Serve the React frontend (Vite build output)
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "directory": "dist",
+    "binding": "ASSETS"
+  },
+
+  // Enable logs for debugging the Agent and Sandbox
+  "observability": {
+    "enabled": true
+  },
+
+  // 1. Define the Sandbox Container (Docker)
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./Dockerfile" // Uses the Python+DataScience Dockerfile
+    }
+  ],
+
+  // 2. Bind Durable Objects
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "PRIMARY_AGENT",
+        "class_name": "PolymathAgent"
+      },
+      {
+        "name": "CODE_SANDBOX",
+        "class_name": "Sandbox"
+      }
+    ]
+  },
+
+  // 3. Define Background Workflows
+  "workflows": [
+    {
+      "name": "RESEARCH_WORKFLOW",
+      "binding": "RESEARCH_WORKFLOW",
+      "class_name": "ResearchWorkflow"
+    }
+  ],
+
+  // 4. Migrations (Required for Durable Objects)
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["PolymathAgent"], // Agent stores chat history in SQLite
+      "new_classes": ["ResearchWorkflow", "Sandbox"]
+    }
+  ],
+
+  // 5. AI Capabilities
+  "ai": {
+    "binding": "AI"
+  },
+
+  // 6. Browser Rendering (for Web Crawler)
+  "browser": {
+    "binding": "MY_BROWSER"
+  },
+
+  // 7. Persistent Storage (Knowledge Base)
+  "r2_buckets": [
+    {
+      "binding": "KNOWLEDGE_BASE",
+      "bucket_name": "polymath-knowledge-base"
+    }
+  ]
 }

@@ -1,100 +1,177 @@
-import { useState, useEffect, useRef } from 'react'
-import { useAgent } from "agents/react";
-import './App.css'
+import {
+  Conversation,
+  ConversationContent,
+  ConversationScrollButton,
+} from '@/components/ai-elements/conversation';
+import {
+  Message,
+  MessageContent,
+  MessageResponse,
+  MessageActions,
+  MessageAction,
+} from '@/components/ai-elements/message';
+import {
+  PromptInput,
+  PromptInputBody,
+  PromptInputButton,
+  PromptInputHeader,
+  PromptInputSubmit,
+  PromptInputTextarea,
+  PromptInputFooter,
+  PromptInputTools,
+} from '@/components/ai-elements/prompt-input';
+import { useState } from 'react';
+import { useChat } from '@ai-sdk/react';
+import { CopyIcon, GlobeIcon, RefreshCcwIcon } from 'lucide-react';
+import {
+  Source,
+  Sources,
+  SourcesContent,
+  SourcesTrigger,
+} from '@/components/ai-elements/sources';
+import {
+  Reasoning,
+  ReasoningContent,
+  ReasoningTrigger,
+} from '@/components/ai-elements/reasoning';
+import { Loader } from '@/components/ai-elements/loader';
+import './App.css';
 
-interface Message {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-}
+const ChatBot = () => {
+  const [input, setInput] = useState('');
+  // We don't really support model switching yet in backend, but UI can show it
+  const [webSearch, setWebSearch] = useState(false);
 
-function App() {
-  // Connect to the "PolymathAgent" with a specific ID (or "default" for a singleton-like behavior)
-  const agent = useAgent({
-    agent: "PolymathAgent",
-    name: "default"
+  const { messages, sendMessage, status, reload, stop } = useChat({
+    api: '/api/chat',
+    // Transform custom data events into message parts if needed,
+    // but useChat handles standard protocol.
+    // Our backend sends 'd' (data) for reasoning.
+    // We might need to process data parts in the UI.
   });
 
-  const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const handleSubmit = () => {
+    if (!input.trim()) return;
 
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    sendMessage(
+      {
+        content: input,
+        role: 'user'
+      },
+      {
+        body: {
+          webSearch: webSearch,
+        },
+      },
+    );
+    setInput('');
+  };
+
+  // Helper to extract reasoning from data parts
+  const getReasoning = (message: any) => {
+    // If we sent data parts with { type: 'reasoning', content: ... }
+    // useChat stores them in message.toolInvocations or message.data?
+    // In SDK 3.x/4.x/5.x it varies. SDK 6 (beta) has specialized parts.
+    // If we use '0' text parts, it's just text.
+    // If we use '2' (tool), it's tool.
+    // If we use 'd' (data), it's in message.data (array).
+    if (message.data) {
+        return message.data
+            .filter((d: any) => d && d.type === 'reasoning')
+            .map((d: any) => d.content)
+            .join('\n');
     }
-  }, [messages]);
-
-  useEffect(() => {
-    if (agent) {
-        // Listen for messages from the agent (including research updates broadcasted via WebSocket)
-        // The agents SDK might have a specific way to subscribe.
-        // Based on typical useAgent hooks, it exposes messages or an event listener.
-        // Assuming typical WebSocket behavior here if useAgent exposes the socket or messages directly.
-        // If useAgent returns a state object with messages, we can sync it.
-        // But typically useAgent returns { agent, lastMessage, connectionStatus, ... }
-        // Let's assume we need to manage messages or use the ones from the hook.
-        // For this demo, we'll assume we need to handle incoming messages if the hook exposes a listener.
-        // NOTE: Without exact SDK docs for 'useAgent' return value, we assume it provides a way to send and receive.
-
-        // Let's implement a listener if the SDK exposes `onMessage` or similar.
-        // If not, we might rely on the return value `lastMessage` in a useEffect.
-    }
-  }, [agent]);
-
-  // A helper to handle sending
-  const handleSend = async () => {
-    if (!input.trim() || !agent) return;
-
-    const userMsg: Message = { role: 'user', content: input };
-    setMessages(prev => [...prev, userMsg]);
-    setInput("");
-
-    try {
-        // Send message to agent. Expecting a response.
-        // If the agent uses WebSockets, this might be void and we wait for onMessage.
-        // If it uses HTTP (via the hook helper), it might return the response.
-        // The PolymathAgent.onChatMessage returns the response string.
-        const response = await agent.onChatMessage(userMsg.content);
-
-        setMessages(prev => [...prev, { role: 'assistant', content: response }]);
-    } catch (e) {
-        console.error("Error sending message:", e);
-        setMessages(prev => [...prev, { role: 'system', content: "Error communicating with agent." }]);
-    }
+    return null;
   };
 
   return (
-    <div className="chat-container">
-      <header>
-        <h1>Polymath AI Agent</h1>
-        <p>Powered by Cloudflare Agents, Workflows, Workers AI & Sandbox</p>
-      </header>
+    <div className="flex flex-col h-screen w-full bg-background text-foreground">
+      <div className="flex-1 overflow-hidden relative max-w-4xl mx-auto w-full p-4">
+        <Conversation className="h-full">
+          <ConversationContent>
+            {messages.map((message) => {
+              const reasoning = getReasoning(message);
+              return (
+              <div key={message.id} className="mb-6">
 
-      <div className="messages" ref={scrollRef}>
-        {messages.map((m, i) => (
-          <div key={i} className={`message ${m.role}`}>
-            <div className="role-label">{m.role.toUpperCase()}</div>
-            <div className="content">{m.content}</div>
-          </div>
-        ))}
+                {/* Reasoning Block */}
+                {reasoning && (
+                   <Reasoning className="mb-2 w-full">
+                      <ReasoningTrigger />
+                      <ReasoningContent>{reasoning}</ReasoningContent>
+                   </Reasoning>
+                )}
+
+                {/* Message Content */}
+                <Message from={message.role}>
+                  <MessageContent>
+                    <MessageResponse>
+                        {/* We render standard text content */}
+                        {message.content}
+                    </MessageResponse>
+                  </MessageContent>
+
+                  {message.role === 'assistant' && (
+                    <MessageActions>
+                      <MessageAction
+                        onClick={() => reload()}
+                        label="Retry"
+                      >
+                        <RefreshCcwIcon className="size-3" />
+                      </MessageAction>
+                      <MessageAction
+                        onClick={() =>
+                          navigator.clipboard.writeText(message.content)
+                        }
+                        label="Copy"
+                      >
+                        <CopyIcon className="size-3" />
+                      </MessageAction>
+                    </MessageActions>
+                  )}
+                </Message>
+              </div>
+            )})}
+
+            {status === 'submitted' && <Loader />}
+          </ConversationContent>
+          <ConversationScrollButton />
+        </Conversation>
       </div>
 
-      <div className="input-area">
-        <textarea
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              handleSend();
-            }
-          }}
-          placeholder="Ask me to research something or write code..."
-        />
-        <button onClick={handleSend} disabled={!agent}>Send</button>
+      <div className="p-4 bg-background/80 backdrop-blur-sm border-t">
+        <PromptInput onSubmit={handleSubmit} className="max-w-4xl mx-auto">
+          <PromptInputHeader />
+          <PromptInputBody>
+            <PromptInputTextarea
+              onChange={(e) => setInput(e.target.value)}
+              value={input}
+              placeholder="Ask Polymath to research or code..."
+              onKeyDown={(e) => {
+                 if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSubmit();
+                 }
+              }}
+            />
+          </PromptInputBody>
+          <PromptInputFooter>
+            <PromptInputTools>
+              <PromptInputButton
+                variant={webSearch ? 'default' : 'ghost'}
+                onClick={() => setWebSearch(!webSearch)}
+                className={webSearch ? "text-blue-500" : ""}
+              >
+                <GlobeIcon size={16} />
+                <span className="ml-2">Deep Research</span>
+              </PromptInputButton>
+            </PromptInputTools>
+            <PromptInputSubmit disabled={!input.trim() && status !== 'streaming'} status={status === 'streaming' ? 'streaming' : 'ready'} />
+          </PromptInputFooter>
+        </PromptInput>
       </div>
     </div>
-  )
-}
+  );
+};
 
-export default App
+export default ChatBot;

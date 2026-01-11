@@ -2,176 +2,215 @@ import { Agent } from "agents";
 import { z } from "zod";
 import { executeCode } from "./tools/sandbox";
 
+// Protocol constants
+const StreamPart = {
+  Text: '0',
+  Data: '2',
+};
+
 export class PolymathAgent extends Agent<Env> {
-  // Use a fast, accurate model for general conversation
   readonly model = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
-  // Define capability tools
-  readonly tools = {
-    /**
-     * Tool 1: The Engineer (Sandbox)
-     * Executes code safely to solve math, data, or logic problems.
-     */
-    runCode: {
-      description: "Execute Python code. Use this for math, data analysis, or complex logic. Returns stdout.",
-      parameters: z.object({
-        code: z.string().describe("The Python code to execute"),
-        dependencies: z.array(z.string()).optional().describe("Pip packages to install (e.g. ['numpy', 'pandas'])")
-      }),
-      execute: async (args: { code: string; dependencies?: string[] }) => {
-        try {
-          return await executeCode(this.env, args.code);
-        } catch (err: any) {
-          return `Error executing code: ${err.message}`;
-        }
-      }
-    },
+  async chat(messages: any[], options: { model?: string, webSearch?: boolean } = {}) {
+    const { readable, writable } = new TransformStream();
+    const writer = writable.getWriter();
+    const encoder = new TextEncoder();
 
-    /**
-     * Tool 2: The Researcher (Workflow)
-     * Offloads deep research to a background workflow to avoid timeouts.
-     */
-    startResearch: {
-      description: "Start a deep research task for complex queries requiring web browsing. Returns a Job ID.",
-      parameters: z.object({
-        query: z.string().describe("The topic to research"),
-        depth: z.number().default(3).describe("Number of pages to browse")
-      }),
-      execute: async (args: { query: string; depth: number }) => {
-        // Access ID from state (standard Durable Object pattern)
-        // If Agent class exposes this.id, great, otherwise use this.state.id
-        const agentId = this.state?.id?.toString() || "unknown";
+    const write = async (type: string, content: string) => {
+      await writer.write(encoder.encode(`${type}:${JSON.stringify(content)}\n`));
+    };
 
-        const run = await this.env.RESEARCH_WORKFLOW.create({
-          params: { 
-            query: args.query, 
-            depth: args.depth, 
-            agentId: agentId
-          }
+    (async () => {
+      try {
+        const history = await this.sql`SELECT * FROM messages ORDER BY created_at DESC LIMIT 20`;
+        const pastMessages = history.reverse().map((row: any) => ({
+          role: row.role,
+          content: row.content
+        }));
+
+        const fullMessages = [...pastMessages, ...messages];
+        const lastUserMessage = messages[messages.length - 1].content;
+
+        const systemPrompt = `You are Polymath, an expert AI assistant.
+        Capabilities:
+        - Python Code Execution (for math, logic, data).
+        - Deep Research (for finding information online).
+
+        If the user asks for research, use the "startResearch" tool.
+        If the user asks for calculation/code, use "runCode".
+        Otherwise, answer directly.
+        `;
+
+        const toolCheck = await this.env.AI.run(this.model, {
+           messages: [
+             { role: "system", content: systemPrompt },
+             ...fullMessages
+           ],
+           tools: [
+             {
+               name: "runCode",
+               description: "Execute Python code",
+               parameters: {
+                 type: "object",
+                 properties: {
+                   code: { type: "string" },
+                   dependencies: { type: "array", items: { type: "string" } }
+                 },
+                 required: ["code"]
+               }
+             },
+             {
+               name: "startResearch",
+               description: "Start deep research",
+               parameters: {
+                 type: "object",
+                 properties: {
+                   query: { type: "string" },
+                   depth: { type: "number" }
+                 },
+                 required: ["query"]
+               }
+             }
+           ]
         });
-        return `Research started. Job ID: ${run.id}. Tell the user you are researching and will report back shortly.`;
-      }
-    }
-  };
 
-  /**
-   * Handle incoming user messages.
-   * The 'agents' SDK automatically manages history in SQLite.
-   */
-  async onChatMessage(message: string) {
-    const history = await this.sql`SELECT * FROM messages ORDER BY created_at DESC LIMIT 15`;
-    const messages = history.reverse().map((row: any) => ({
-      role: row.role,
-      content: row.content
-    }));
+        // @ts-ignore
+        if (toolCheck.tool_calls && toolCheck.tool_calls.length > 0) {
+            // @ts-ignore
+            const call = toolCheck.tool_calls[0];
 
-    // Manually calling AI since runAI might not be on the base class
-    // We use the tools defined above.
-    // Note: To support tool calling properly, we need to loop or use a library that handles it.
-    // For simplicity/robustness here, we'll do a simple run with tools if supported,
-    // or just prompt.
-    // Workers AI supports tools.
+            await write('d', { type: "status", message: `Using tool: ${call.name}` });
 
-    // We'll use a simple implementation that calls the model.
-    // Ideally, we'd use a helper from @cloudflare/ai-utils if available.
+            let toolResult = "";
 
-    const systemPrompt = "You are Polymath, a helpful AI agent with access to a code interpreter (Python) and a deep research workflow. Use them when needed.";
+            if (call.name === "runCode") {
+                const args = call.arguments;
+                await write('d', { type: "reasoning", content: `Executing code:\n${args.code}` });
+                try {
+                    // Fix usage: Use 3 args signature
+                    toolResult = await executeCode(this.env, args.code, args.dependencies || []);
+                    await write('d', { type: "tool_result", name: call.name, result: toolResult });
+                } catch (e: any) {
+                    toolResult = `Error: ${e.message}`;
+                }
+            } else if (call.name === "startResearch") {
+                const args = call.arguments;
+                await write('d', { type: "reasoning", content: `Starting research on: ${args.query}` });
 
-    const response = await this.env.AI.run(this.model, {
-      messages: [
-        { role: "system", content: systemPrompt },
-        ...messages,
-        { role: "user", content: message }
-      ],
-      tools: [
-        {
-            name: "runCode",
-            description: this.tools.runCode.description,
-            parameters: {
-                type: "object",
-                properties: {
-                    code: { type: "string", description: "The Python code to execute" },
-                    dependencies: { type: "array", items: { type: "string" }, description: "Pip packages" }
-                },
-                required: ["code"]
+                const run = await this.env.RESEARCH_WORKFLOW.create({
+                    params: {
+                        query: args.query,
+                        depth: args.depth || 3,
+                        agentId: this.state.id.toString()
+                    }
+                });
+
+                let report = null;
+                for (let i = 0; i < 60; i++) {
+                    await new Promise(r => setTimeout(r, 1000));
+                    const check = await this.sql`SELECT content FROM messages WHERE role='system' AND content LIKE 'Research Complete:%' ORDER BY created_at DESC LIMIT 1`;
+                    if (check.length > 0) {
+                        report = check[0].content;
+                        break;
+                    }
+                }
+
+                if (report) {
+                    toolResult = report;
+                } else {
+                    toolResult = "Research timed out or is still running.";
+                }
             }
-        },
-        {
-            name: "startResearch",
-            description: this.tools.startResearch.description,
-            parameters: {
-                type: "object",
-                properties: {
-                    query: { type: "string", description: "The topic to research" },
-                    depth: { type: "number", description: "Number of pages to browse" }
-                },
-                required: ["query"]
+
+            const finalStream = await this.env.AI.run(this.model, {
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    ...fullMessages,
+                    // @ts-ignore
+                    { role: "assistant", tool_calls: [call] },
+                    { role: "tool", name: call.name, content: toolResult }
+                ],
+                stream: true
+            });
+
+            // @ts-ignore
+            for await (const chunk of finalStream) {
+                // @ts-ignore
+                const text = chunk.response;
+                if (text) await write('0', text);
+            }
+
+        } else {
+            const stream = await this.env.AI.run(this.model, {
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    ...fullMessages
+                ],
+                stream: true
+            });
+            // @ts-ignore
+            for await (const chunk of stream) {
+                // @ts-ignore
+                const text = chunk.response;
+                if (text) await write('0', text);
             }
         }
-      ]
+
+        await this.sql`INSERT INTO messages (role, content) VALUES ('user', ${lastUserMessage})`;
+
+      } catch (error: any) {
+        console.error("Agent error:", error);
+        await write('0', `\n[Error: ${error.message}]`);
+      } finally {
+        writer.close();
+      }
+    })();
+
+    return new Response(readable, {
+        headers: {
+            "Content-Type": "text/plain; charset=utf-8",
+            "X-Vercel-AI-Data-Stream": "v1"
+        }
     });
-
-    // Handle tool calls if any
-    // This is a simplified handler. Real implementation needs a loop.
-    let finalResponse = "";
-    if ((response as any).tool_calls && (response as any).tool_calls.length > 0) {
-        const toolCall = (response as any).tool_calls[0];
-        const toolName = toolCall.name;
-        const toolArgs = toolCall.arguments;
-
-        let toolResult = "";
-        if (toolName === "runCode") {
-             toolResult = await this.tools.runCode.execute(toolArgs);
-        } else if (toolName === "startResearch") {
-             toolResult = await this.tools.startResearch.execute(toolArgs);
-        }
-
-        // Feed result back to LLM
-        const secondResponse = await this.env.AI.run(this.model, {
-             messages: [
-                { role: "system", content: systemPrompt },
-                ...messages,
-                { role: "user", content: message },
-                { role: "assistant", tool_calls: [toolCall] }, // This format depends on the specific model/API
-                { role: "tool", content: toolResult, name: toolName }
-             ]
-        });
-        finalResponse = (secondResponse as any).response;
-    } else {
-        finalResponse = (response as any).response;
-    }
-
-    await this.sql`INSERT INTO messages (role, content) VALUES ('user', ${message}), ('assistant', ${finalResponse})`;
-    return finalResponse;
   }
 
-  /**
-   * Called by the Workflow when research is complete.
-   * This allows the agent to asynchronously notify the user.
-   */
-  async reportResearchResults(report: string) {
-    // Save to history so the context is available
-    await this.sql`INSERT INTO messages (role, content) VALUES ('system', ${`Research Complete: ${report}`})`;
-
-    // Broadcast via WebSocket to connected clients
-    // Ensure broadcast exists or implement a fallback
-    if (typeof this.broadcast === 'function') {
-        this.broadcast({
-            type: "research_complete",
-            content: report
-        });
-    }
-  }
-
-  // Handle internal callbacks from Workflow
+  // Handle internal callbacks from Workflow AND internal chat proxy
   async fetch(request: Request) {
     const url = new URL(request.url);
+
+    // Internal Chat Route
+    if (url.pathname === "/internal/chat" && request.method === "POST") {
+         const body = await request.json() as any;
+         // Assume body has { messages, model, ... }
+         // We call this.chat which returns a Response (stream)
+         return this.chat(body.messages, body);
+    }
+
     if (url.pathname === "/internal/report" && request.method === "POST") {
         const { report } = await request.json() as { report: string };
         await this.reportResearchResults(report);
         return new Response("OK");
     }
-    // Fallback to default Agent handling (WebSockets, etc.)
+
     return super.fetch(request);
+  }
+
+  // ... rest of class (reportResearchResults, onChatMessage etc)
+  // Re-adding onChatMessage and reportResearchResults just in case
+
+  async onChatMessage(message: string) {
+      // Fallback for standard Agent SDK usage
+      return "Use the premium chat interface.";
+  }
+
+  async reportResearchResults(report: string) {
+    await this.sql`INSERT INTO messages (role, content) VALUES ('system', ${`Research Complete: ${report}`})`;
+    // Broadcast if needed
+    if (typeof (this as any).broadcast === 'function') {
+        (this as any).broadcast({
+            type: "research_complete",
+            content: report
+        });
+    }
   }
 }

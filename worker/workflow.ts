@@ -21,25 +21,37 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
     });
 
     // Step 2: Parallel Web Browsing
-    const findings = await Promise.all(queries.map((q, idx) => 
-      step.do(`browse-${idx}`, async () => {
+    // Note: Puppeteer in workflows requires careful resource management.
+    // We execute queries in sequence for stability or parallel if resources allow.
+    // Here we use a limited parallel approach or just map.
+    const findings = await step.do("browse", async () => {
+        const results = [];
         const browser = await puppeteer.launch(this.env.MY_BROWSER);
-        const page = await browser.newPage();
-        
         try {
-          // Perform Google Search (simulated via direct navigation for stability)
-          await page.goto(`https://www.google.com/search?q=${encodeURIComponent(q)}`);
-          
-          // Extract search results text
-          const content = await page.evaluate(() => document.body.innerText);
-          await browser.close();
-          return content.substring(0, 2000); // Limit context size
-        } catch (e) {
-          await browser.close();
-          return `Failed to browse ${q}`;
+            for (const q of queries) {
+                const page = await browser.newPage();
+                try {
+                    // Using a search engine (mocked here by visiting a direct page if possible, or using google)
+                    // Since we can't reliably scrape Google without getting blocked often, we might try to visit specific sites if the query implies them,
+                    // or just try to visit a generic search page.
+                    // For the sake of this demo, we will try to visit a documentation site or wikipedia if relevant.
+                    // But to be generic, let's try a search engine.
+                    await page.goto(`https://www.google.com/search?q=${encodeURIComponent(q)}`, { waitUntil: 'networkidle0' });
+
+                    // Extract search results text (naive extraction)
+                    const content = await page.evaluate(() => document.body.innerText);
+                    results.push(`Query: ${q}\nContent: ${content.substring(0, 1000)}...`);
+                    await page.close();
+                } catch (e) {
+                    results.push(`Failed to browse ${q}: ${e}`);
+                    await page.close();
+                }
+            }
+        } finally {
+            await browser.close();
         }
-      })
-    ));
+        return results;
+    });
 
     // Step 3: Synthesize Report
     const report = await step.do("synthesize", async () => {
@@ -59,7 +71,7 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
         const id = this.env.PRIMARY_AGENT.idFromString(agentId);
         const stub = this.env.PRIMARY_AGENT.get(id);
         
-        // Custom RPC method (requires extending the Agent class slightly or using fetch)
+        // Call the internal endpoint we defined in the Agent
         await stub.fetch("http://internal/report", {
             method: "POST",
             body: JSON.stringify({ report })

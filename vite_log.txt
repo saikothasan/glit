@@ -1,0 +1,18 @@
+
+> polymath@0.0.0 dev
+> vite --host
+
+error when starting dev server:
+Error: Failed to start the remote proxy session, see the error details below:
+
+You must be logged in to use wrangler dev in remote mode. Try logging in, or run wrangler dev --local.
+    at /app/node_modules/wrangler/wrangler-dist/cli.js:285550:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async startRemoteProxySession (/app/node_modules/wrangler/wrangler-dist/cli.js:285521:18)
+    at async Module.maybeStartOrUpdateRemoteProxySession (/app/node_modules/wrangler/wrangler-dist/cli.js:285665:32)
+    at async file:///app/node_modules/@cloudflare/vite-plugin/dist/index.mjs:23081:80
+    at async Promise.all (index 0)
+    at async getDevMiniflareOptions (file:///app/node_modules/@cloudflare/vite-plugin/dist/index.mjs:23078:70)
+    at async BasicMinimalPluginContext.configureServer (file:///app/node_modules/@cloudflare/vite-plugin/dist/index.mjs:23371:27)
+    at async _createServer (file:///app/node_modules/vite/dist/node/chunks/config.js:25603:86)
+    at async CAC.<anonymous> (file:///app/node_modules/vite/dist/node/cli.js:572:18)
